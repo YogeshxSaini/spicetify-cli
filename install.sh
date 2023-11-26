@@ -4,6 +4,9 @@
 
 set -e
 
+# Default values
+override_root=0
+
 while getopts ":r" arg; do
 	case "${arg}" in
 		"r") override_root=1 ;;
@@ -11,24 +14,26 @@ while getopts ":r" arg; do
 done
 
 is_root() {
-	[ "${EUID:-$(id -u)}" -eq 0 ];
+	[ "${EUID:-$(id -u)}" -eq 0 ]
 }
 
-if is_root && [ "${override_root:-0}" -eq 0 ]; then
-	echo "The script was ran as root. Script will now exit"
-	echo "If you did not intend to do this, please run the script without root permissions to avoid issues with Spicetify"
-	echo "You can override this behavior by passing `-r` or `--root` flag to this script"
+if is_root && [ "${override_root}" -eq 0 ]; then
+	echo "The script was run as root. Script will now exit."
+	echo "If you did not intend to do this, please run the script without root permissions to avoid issues with Spicetify."
+	echo "You can override this behavior by passing '-r' or '--root' flag to this script."
 	exit
 fi
 
-# wipe existing log
+# Wipe existing log
 > install.log
 
 log() {
-	echo $1
-	echo "["$(date +'%H:%M:%S %Y-%m-%d')"]" $1 >> install.log
+	local timestamp="[$(date +'%H:%M:%S %Y-%m-%d')]"
+	echo "$timestamp $1"
+	echo "$timestamp $1" >> install.log
 }
 
+# Platform detection
 case $(uname -sm) in
 	"Darwin x86_64") target="darwin-amd64" ;;
 	"Darwin arm64") target="darwin-arm64" ;;
@@ -37,35 +42,26 @@ case $(uname -sm) in
 	*) log "Unsupported platform $(uname -sm). x86_64 and arm64 binaries for Linux and Darwin are available."; exit ;;
 esac
 
-# check for dependencies
-command -v curl >/dev/null || { log "curl isn't installed\!" >&2; exit 1; }
-command -v tar >/dev/null || { log "tar isn't installed\!" >&2; exit 1; }
-command -v grep >/dev/null || { log "grep isn't installed\!" >&2; exit 1; }
+# Check for dependencies
+for cmd in curl tar grep; do
+	command -v "$cmd" >/dev/null || { log "$cmd isn't installed!"; exit 1; }
+done
 
-# download uri
+# Download URI
 releases_uri=https://github.com/spicetify/spicetify-cli/releases
-if [ $# -gt 0 ]; then
-	tag=$1
-else
-	tag=$(curl -LsH 'Accept: application/json' $releases_uri/latest)
-	tag=${tag%\,\"update_url*}
-	tag=${tag##*tag_name\":\"}
-	tag=${tag%\"}
-fi
-
-tag=${tag#v}
+tag=${1:-$(curl -LsH 'Accept: application/json' "$releases_uri/latest" | grep -o '"tag_name":"v[^"]*' | cut -d':' -f2)}
 
 log "FETCHING Version $tag"
 
-download_uri=$releases_uri/download/v$tag/spicetify-$tag-$target.tar.gz
+download_uri="$releases_uri/download/v$tag/spicetify-$tag-$target.tar.gz"
 
-# locations
+# Locations
 spicetify_install="$HOME/.spicetify"
 exe="$spicetify_install/spicetify"
 tar="$spicetify_install/spicetify.tar.gz"
 
-# installing
-[ ! -d "$spicetify_install" ] && log "CREATING $spicetify_install" && mkdir -p "$spicetify_install"
+# Installing
+[ ! -d "$spicetify_install" ] && { log "CREATING $spicetify_install"; mkdir -p "$spicetify_install"; }
 
 log "DOWNLOADING $download_uri"
 curl --fail --location --progress-bar --output "$tar" "$download_uri"
@@ -93,40 +89,31 @@ endswith_newline() {
 
 check() {
 	local path="export PATH=\$PATH:$spicetify_install"
-	local shellrc=$HOME/$1
+	local shellrc="$HOME/$1"
 	
-	if [ "$1" == ".zshrc" ] && [ ! -z "${ZDOTDIR}" ]; then
-		shellrc=$ZDOTDIR/$1
+	if [ "$1" = ".zshrc" ] && [ ! -z "${ZDOTDIR}" ]; then
+		shellrc="$ZDOTDIR/$1"
 	fi
 
 	# Create shellrc if it doesn't exist
-	if ! [ -f $shellrc ]; then
-		log "CREATING $shellrc"
-		touch $shellrc
-	fi
+	[ -f "$shellrc" ] || { log "CREATING $shellrc"; touch "$shellrc"; }
 
 	# Still checking again, in case touch command failed
-	if [ -f $shellrc ]; then
-		if ! grep -q $spicetify_install $shellrc; then
+	[ -f "$shellrc" ] && {
+		grep -q "$spicetify_install" "$shellrc" || {
 			log "APPENDING $spicetify_install to PATH in $shellrc"
-			if ! endswith_newline $shellrc; then
-				echo >> $shellrc
-			fi
-			echo ${2:-$path} >> $shellrc
+			endswith_newline "$shellrc" || echo >> "$shellrc"
+			echo "${2:-$path}" >> "$shellrc"
 			log "Restart your shell to have spicetify in your PATH."
-		else
-			log "spicetify path already set in $shellrc, continuing..."
-		fi
-	else
-		notfound
-	fi
+		} || log "spicetify path already set in $shellrc, continuing..."
+	} || notfound
 }
 
 case $SHELL in
 	*zsh) check ".zshrc" ;;
 	*bash)
-		[ -f "$HOME/.bashrc" ] && check ".bashrc"
-		[ -f "$HOME/.bash_profile" ] && check ".bash_profile"
+		check ".bashrc"
+		check ".bash_profile"
 	;;
 	*fish) check ".config/fish/config.fish" "fish_add_path $spicetify_install" ;;
 	*) notfound ;;
@@ -135,3 +122,4 @@ esac
 echo
 log "spicetify v$tag was installed successfully to $spicetify_install"
 log "Run 'spicetify --help' to get started"
+
